@@ -7,12 +7,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Scan Toolbox with fail-on never
+      - name: Scan Toolbox and fail on high findings
         id: scan
         uses: ./
         with:
           url: https://toolbox.allthepossibles.com/mcp
-          fail-on: never
+          fail-on: high
       - name: Check outputs are set
         env:
           VERDICT: ${{ steps.scan.outputs.verdict }}
@@ -26,6 +26,6 @@ jobs:
         uses: ./
         with:
           url: https://toolbox.allthepossibles.com/mcp
-          fail-on: medium
+          fail-on: low
       - name: Confirm the gate failed
         run: test "${{ steps.gate.outcome }}" = "failure"

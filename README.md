@@ -24,7 +24,7 @@ To use the results in a later step, give the step an `id`:
         id: scan
         with:
           url: https://example.com/mcp
-          fail-on: never
+          fail-on: high
       - run: echo "Verdict was ${{ steps.scan.outputs.verdict }}"
 ```
 
