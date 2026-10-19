@@ -1,0 +1,28 @@
+name: Test
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan Toolbox with fail-on never
+        id: scan
+        uses: ./
+        with:
+          url: https://toolbox.allthepossibles.com/mcp
+          fail-on: never
+      - name: Check outputs are set
+        run: |
+          test -n "${{ steps.scan.outputs.verdict }}"
+          echo '${{ steps.scan.outputs.findings-json }}' | jq -e 'type == "array"'
+      - name: Gate must fail on a known finding
+        id: gate
+        continue-on-error: true
+        uses: ./
+        with:
+          url: https://toolbox.allthepossibles.com/mcp
+          fail-on: medium
+      - name: Confirm the gate failed
+        run: test "${{ steps.gate.outcome }}" = "failure"

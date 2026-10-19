@@ -1,0 +1,89 @@
+name: 'Preflight MCP Scan'
+description: 'Scan a remote MCP server with Preflight and fail the job when findings reach a chosen severity.'
+author: 'All the Possibles'
+branding:
+  icon: 'shield'
+  color: 'orange'
+inputs:
+  url:
+    description: 'Streamable HTTP endpoint of the MCP server to scan, for example https://example.com/mcp.'
+    required: true
+  fail-on:
+    description: 'Lowest severity that fails the job: low, medium, high or never. Critical findings count as high.'
+    required: false
+    default: 'high'
+  api-key:
+    description: 'Optional Preflight Pro key (pf_...). Without it the free tier allows 10 scans a day per IP address.'
+    required: false
+    default: ''
+outputs:
+  verdict:
+    description: 'Preflight verdict: clear, caution or high-risk.'
+    value: ${{ steps.scan.outputs.verdict }}
+  findings-json:
+    description: 'The findings array from the scan, as a JSON string.'
+    value: ${{ steps.scan.outputs.findings-json }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        PF_URL: ${{ inputs.url }}
+        PF_FAIL_ON: ${{ inputs.fail-on }}
+        PF_KEY: ${{ inputs.api-key }}
+      run: |
+        set -uo pipefail
+        case "$PF_FAIL_ON" in low|medium|high|never) ;; *)
+          echo "::error::fail-on must be low, medium, high or never (got '$PF_FAIL_ON')"; exit 2;; esac
+
+        body=$(jq -n --arg url "$PF_URL" '{url: $url}')
+        args=(-sS -X POST https://preflight.allthepossibles.com/api/scan
+              -H 'Content-Type: application/json' --max-time 90
+              -o "$RUNNER_TEMP/preflight.json" -w '%{http_code}' -d "$body")
+        if [ -n "$PF_KEY" ]; then
+          echo "::add-mask::$PF_KEY"
+          args+=(-H "Authorization: Bearer $PF_KEY")
+        fi
+        code=$(curl "${args[@]}") || code=000
+        if [ "$code" != "200" ]; then
+          echo "::error::Preflight returned HTTP $code"
+          { echo "## Preflight scan"; echo; echo "The scan did not complete (HTTP $code)."; echo; echo '```'; head -c 1000 "$RUNNER_TEMP/preflight.json" 2>/dev/null; echo; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+
+        verdict=$(jq -r '.verdict // "unknown"' "$RUNNER_TEMP/preflight.json")
+        findings=$(jq -c '.findings // []' "$RUNNER_TEMP/preflight.json")
+        {
+          echo "verdict=$verdict"
+          echo "findings-json=$findings"
+        } >> "$GITHUB_OUTPUT"
+
+        {
+          echo "## Preflight scan"
+          echo
+          echo "Target: \`$PF_URL\`"
+          echo
+          echo "Verdict: **$verdict**"
+          echo
+          if [ "$(jq 'length' <<<"$findings")" -eq 0 ]; then
+            echo "No findings."
+          else
+            echo "| Severity | Category | Finding | Detail |"
+            echo "| --- | --- | --- | --- |"
+            jq -r '.[] | "| \(.severity) | \(.category // "") | \((.title // "") | gsub("\\|";"/")) | \((.detail // "") | gsub("\\|";"/") | gsub("\n";" ")) |"' <<<"$findings"
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        if [ "$PF_FAIL_ON" = "never" ]; then
+          echo "fail-on is never; not failing the job."
+          exit 0
+        fi
+        case "$PF_FAIL_ON" in low) min=1;; medium) min=2;; high) min=3;; esac
+        hits=$(jq --argjson min "$min" '[.[] | select(({"low":1,"medium":2,"high":3,"critical":3}[.severity] // 0) >= $min)] | length' <<<"$findings")
+        if [ "$hits" -gt 0 ]; then
+          echo "::error::$hits finding(s) at or above '$PF_FAIL_ON' severity (verdict: $verdict)"
+          exit 1
+        fi
+        echo "No findings at or above '$PF_FAIL_ON'. Verdict: $verdict"
